@@ -20,7 +20,6 @@ class RpnModel(model.DetectionModel):
     # Keys for Placeholders
     ##############################
     PL_BEV_INPUT = 'bev_input_pl'
-    PL_IMG_INPUT = 'img_input_pl'
     PL_ANCHORS = 'anchors_pl'
 
     PL_BEV_ANCHORS = 'bev_anchors_pl'
@@ -87,10 +86,6 @@ class RpnModel(model.DetectionModel):
                                            input_config.bev_dims_w])
         self._bev_depth = input_config.bev_depth
 
-        self._img_pixel_size = np.asarray([input_config.img_dims_h,
-                                           input_config.img_dims_w])
-        self._img_depth = input_config.img_depth
-
         # Rpn config
         rpn_config = self._config.rpn_config
         self._proposal_roi_crop_size = \
@@ -108,9 +103,6 @@ class RpnModel(model.DetectionModel):
         self._bev_feature_extractor = \
             feature_extractor_builder.get_extractor(
                 self._config.layers_config.bev_feature_extractor)
-        self._img_feature_extractor = \
-            feature_extractor_builder.get_extractor(
-                self._config.layers_config.img_feature_extractor)
 
         # Network input placeholders
         self.placeholders = dict()
@@ -173,24 +165,6 @@ class RpnModel(model.DetectionModel):
             tf.summary.image("bev_maps", bev_summary_images,
                              max_outputs=self._bev_depth)
 
-        with tf.variable_scope('img_input'):
-            # Take variable size input images
-            img_input_placeholder = self._add_placeholder(
-                tf.float32,
-                [None, None, self._img_depth],
-                self.PL_IMG_INPUT)
-
-            self._img_input_batches = tf.expand_dims(
-                img_input_placeholder, axis=0)
-
-            self._img_preprocessed = \
-                self._img_feature_extractor.preprocess_input(
-                    self._img_input_batches, self._img_pixel_size)
-
-            # Summary Image
-            tf.summary.image("rgb_image", self._img_preprocessed,
-                             max_outputs=2)
-
         with tf.variable_scope('pl_labels'):
             self._add_placeholder(tf.float32, [None, 6],
                                   self.PL_LABEL_ANCHORS)
@@ -216,12 +190,6 @@ class RpnModel(model.DetectionModel):
                 self._bev_anchors_norm_pl = self._add_placeholder(
                     tf.float32, [None, 4], self.PL_BEV_ANCHORS_NORM)
 
-            with tf.variable_scope('img_anchor_projections'):
-                self._add_placeholder(tf.float32, [None, 4],
-                                      self.PL_IMG_ANCHORS)
-                self._img_anchors_norm_pl = self._add_placeholder(
-                    tf.float32, [None, 4], self.PL_IMG_ANCHORS_NORM)
-
             with tf.variable_scope('saample_info'):
                 # the calib matrix shape is (3 x 4)
                 self._add_placeholder(
@@ -242,24 +210,10 @@ class RpnModel(model.DetectionModel):
                 self._bev_pixel_size,
                 self._is_training)
 
-        self.img_feature_maps, self.img_end_points = \
-            self._img_feature_extractor.build(
-                self._img_preprocessed,
-                self._img_pixel_size,
-                self._is_training)
 
         with tf.variable_scope('bev_bottleneck'):
             self.bev_bottleneck = slim.conv2d(
                 self.bev_feature_maps,
-                1, [1, 1],
-                scope='bottleneck',
-                normalizer_fn=slim.batch_norm,
-                normalizer_params={
-                    'is_training': self._is_training})
-
-        with tf.variable_scope('img_bottleneck'):
-            self.img_bottleneck = slim.conv2d(
-                self.img_feature_maps,
                 1, [1, 1],
                 scope='bottleneck',
                 normalizer_fn=slim.batch_norm,
@@ -286,36 +240,8 @@ class RpnModel(model.DetectionModel):
         self._set_up_feature_extractors()
 
         bev_proposal_input = self.bev_bottleneck
-        img_proposal_input = self.img_bottleneck
 
         fusion_mean_div_factor = 2.0
-
-        # If both img and bev probabilites are set to 1.0, don't do
-        # path drop.
-        if not (self._path_drop_probabilities[0] ==
-                self._path_drop_probabilities[1] == 1.0):
-            with tf.variable_scope('rpn_path_drop'):
-
-                random_values = tf.random_uniform(shape=[3],
-                                                  minval=0.0,
-                                                  maxval=1.0)
-
-                img_mask, bev_mask = self.create_path_drop_masks(
-                    self._path_drop_probabilities[0],
-                    self._path_drop_probabilities[1],
-                    random_values)
-
-                img_proposal_input = tf.multiply(img_proposal_input,
-                                                 img_mask)
-
-                bev_proposal_input = tf.multiply(bev_proposal_input,
-                                                 bev_mask)
-
-                self.img_path_drop_mask = img_mask
-                self.bev_path_drop_mask = bev_mask
-
-                # Overwrite the division factor
-                fusion_mean_div_factor = img_mask + bev_mask
 
         with tf.variable_scope('proposal_roi_pooling'):
 
@@ -341,22 +267,19 @@ class RpnModel(model.DetectionModel):
                 self._bev_anchors_norm_pl,
                 tf_box_indices,
                 self._proposal_roi_crop_size)
-            # Do ROI Pooling on image
-            img_proposal_rois = tf.image.crop_and_resize(
-                img_proposal_input,
-                self._img_anchors_norm_pl,
-                tf_box_indices,
-                self._proposal_roi_crop_size)
+
 
         with tf.variable_scope('proposal_roi_fusion'):
             rpn_fusion_out = None
             if self._fusion_method == 'mean':
-                tf_features_sum = tf.add(bev_proposal_rois, img_proposal_rois)
-                rpn_fusion_out = tf.divide(tf_features_sum,
-                                           fusion_mean_div_factor)
+                #tf_features_sum = tf.add(bev_proposal_rois, bev_proposal_rois)
+                #rpn_fusion_out = tf.divide(tf_features_sum,
+                #                           fusion_mean_div_factor)
+		rpn_fusion_out = bev_proposal_rois
             elif self._fusion_method == 'concat':
-                rpn_fusion_out = tf.concat(
-                    [bev_proposal_rois, img_proposal_rois], axis=3)
+                #rpn_fusion_out = tf.concat(
+                #    [bev_proposal_rois, bev_proposal_rois], axis=3)
+		rpn_fusion_out = bev_proposal_rois
             else:
                 raise ValueError('Invalid fusion method', self._fusion_method)
 
@@ -446,11 +369,6 @@ class RpnModel(model.DetectionModel):
                     tf.summary.histogram(
                         end_point, self.bev_end_points[end_point])
 
-            with tf.variable_scope('img_vgg'):
-                for end_point in self.img_end_points:
-                    tf.summary.histogram(
-                        end_point, self.img_end_points[end_point])
-
         with tf.variable_scope('histograms_rpn'):
             with tf.variable_scope('anchor_predictor'):
                 fc_layers = [cls_fc6, cls_fc7, cls_fc8, objectness,
@@ -525,24 +443,6 @@ class RpnModel(model.DetectionModel):
                              bev_input_roi_summary_images[-1],
                              max_outputs=rpn_mini_batch_size)
 
-        with tf.variable_scope('img_rpn_rois'):
-            # ROIs on image input
-            mb_img_anchors_norm = tf.boolean_mask(self._img_anchors_norm_pl,
-                                                  mini_batch_mask)
-            mb_img_box_indices = tf.zeros_like(
-                tf.boolean_mask(all_classes_gt, mini_batch_mask),
-                dtype=tf.int32)
-
-            # Do test ROI pooling on mini batch
-            img_input_rois = tf.image.crop_and_resize(
-                self._img_preprocessed,
-                mb_img_anchors_norm,
-                mb_img_box_indices,
-                (32, 32))
-
-            tf.summary.image('img_rpn_rois',
-                             img_input_rois,
-                             max_outputs=rpn_mini_batch_size)
 
         # Ground Truth Tensors
         with tf.variable_scope('one_hot_classes'):
