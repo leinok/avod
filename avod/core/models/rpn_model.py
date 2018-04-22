@@ -729,14 +729,9 @@ class RpnModel(model.DetectionModel):
         bev_anchors, bev_anchors_norm = anchor_projector.project_to_bev(
             anchors_to_use, self._bev_extents)
 
-        # Project box_3d anchors into image space
-        img_anchors, img_anchors_norm = \
-            anchor_projector.project_to_image_space(
-                anchors_to_use, stereo_calib_p2, image_shape)
 
         # Reorder into [y1, x1, y2, x2] for tf.crop_and_resize op
         self._bev_anchors_norm = bev_anchors_norm[:, [1, 0, 3, 2]]
-        self._img_anchors_norm = img_anchors_norm[:, [1, 0, 3, 2]]
 
         # Fill in placeholder inputs
         self._placeholder_inputs[self.PL_ANCHORS] = anchors_to_use
@@ -767,9 +762,7 @@ class RpnModel(model.DetectionModel):
         self._placeholder_inputs[self.PL_BEV_ANCHORS] = bev_anchors
         self._placeholder_inputs[self.PL_BEV_ANCHORS_NORM] = \
             self._bev_anchors_norm
-        self._placeholder_inputs[self.PL_IMG_ANCHORS] = img_anchors
-        self._placeholder_inputs[self.PL_IMG_ANCHORS_NORM] = \
-            self._img_anchors_norm
+
 
     def loss(self, prediction_dict):
 
